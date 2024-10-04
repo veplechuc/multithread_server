@@ -6,9 +6,14 @@ use std::thread::JoinHandle;
 
 pub struct ThreadPool {
     threads: Vec<Worker>,
-    sender: mpsc::Sender<Job>,
+    sender: mpsc::Sender<Message>,
 }
 type Job = Box<dyn FnOnce() + Send + 'static>;
+
+enum Message {
+    NewJob(Job),
+    Terminate,
+}
 
 impl ThreadPool {
     pub fn new(size: usize) -> ThreadPool {
@@ -38,10 +43,28 @@ impl ThreadPool {
     {
         let job = Box::new(f);
 
-        self.sender.send(job).unwrap();
+        self.sender.send(Message::NewJob(job)).unwrap();
     }
 }
 
+impl Drop for ThreadPool {
+    fn drop(&mut self) {
+        println!("Send terminate message to all workers...");
+        for _ in &self.threads {
+            self.sender.send(Message::Terminate).unwrap();
+        }
+        println!("Terminate to all workers...");
+        // since that is async we need to join all the
+        // work in order to let each thread to get the terminate msg
+        // and complete their task
+        for worker in &mut self.threads {
+            println!("Shutting down worker {}", worker.id);
+            if let Some(thread) = worker.thread.take() {
+                thread.join().unwrap();
+            };
+        }
+    }
+}
 // A Worker Struct Responsible for Sending Code from the ThreadPool to a Thread
 // in our case, we want to create the threads and have them wait for code that we’ll send later.
 
@@ -54,26 +77,36 @@ we’ll store instances of the Worker struct. Each Worker will store a single Jo
 */
 struct Worker {
     id: usize,
-    thread: thread::JoinHandle<()>,
+    thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Worker {
-    fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> Worker {
+    fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Message>>>) -> Worker {
         /* In the worker, our closure being passed to thread::spawn still only references the receiving end of the channel.
         Instead, we need the closure to loop forever, asking the receiving end of the channel for a job and
         running the job when it gets one. */
         let thread = thread::spawn(move || loop {
-            let job = receiver
+            let message = receiver
                 .lock() // to adquire the mutex
                 .unwrap() // if anything fails
                 .recv() // to receive the job from channel
                 .unwrap(); // again checks if fails
 
-            println!("Worker {id} got a job; executing.");
-
-            job();
+            match message {
+                Message::NewJob(job) => {
+                    println!("Worker {} got a job, executing ", id);
+                    job();
+                }
+                Message::Terminate => {
+                    println!("Worker {} to terminate executing ", id);
+                    break;
+                }
+            }
         });
 
-        Worker { id, thread }
+        Worker {
+            id,
+            thread: Some(thread),
+        }
     }
 }

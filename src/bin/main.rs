@@ -9,7 +9,12 @@ use webserver_lgr::ThreadPool;
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:9090").unwrap();
     let tpool = ThreadPool::new(4);
-    for stream in listener.incoming() {
+    // to see in action the termination of the process you must add
+    // to listener.incoming().. listener.incoming().take(x) wher x = numers of requests
+    // this way you will tell to main only to process x numbers of requests and then shutdown
+
+    for stream in listener.incoming().take(5) {
+        // we only proces 5 requests
         let stream = stream.unwrap();
         tpool.execute(|| {
             handle_connection(stream);
